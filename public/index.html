@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Telegram Gift Auction - Demo</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Multi-round Auction Demo (Telegram Gift Auctions-inspired)</h1>
+      <p class="muted">Minimal UI to demonstrate rounds, bidding, ranking, anti-sniping and balance correctness.</p>
+    </header>
+
+    <main class="grid">
+      <section class="card">
+        <h2>User</h2>
+        <div class="row">
+          <input id="username" placeholder="username" />
+          <button id="createUser">Create</button>
+        </div>
+        <div class="row">
+          <input id="userId" placeholder="userId" />
+          <button id="loadUser">Load</button>
+        </div>
+        <div class="row">
+          <input id="topup" placeholder="topup cents (e.g. 100000 = 1000.00)" />
+          <button id="doTopup">Top up</button>
+        </div>
+        <pre id="userBox" class="box"></pre>
+      </section>
+
+      <section class="card">
+        <h2>Auction</h2>
+        <div class="row">
+          <input id="auctionId" placeholder="auctionId" />
+          <button id="loadAuction">Load</button>
+        </div>
+        <div class="row">
+          <input id="title" placeholder="title" value="Demo Gift" />
+        </div>
+        <div class="row">
+          <input id="totalItems" type="number" value="500" />
+          <label>Total</label>
+          <input id="itemsPerRound" type="number" value="50" />
+          <label>Per round</label>
+        </div>
+        <div class="row">
+          <input id="roundDurationSec" type="number" value="60" />
+          <label>Round sec</label>
+          <input id="minBidCents" type="number" value="1" />
+          <label>Min bid cents</label>
+        </div>
+        <div class="row">
+          <input id="antiWindow" type="number" value="10" />
+          <label>Anti-snipe window</label>
+          <input id="antiExt" type="number" value="10" />
+          <label>+sec</label>
+          <input id="antiMax" type="number" value="60" />
+          <label>max +sec</label>
+        </div>
+        <div class="row">
+          <button id="createAuction">Create auction</button>
+          <button id="startAuction">Start</button>
+        </div>
+        <pre id="auctionBox" class="box"></pre>
+      </section>
+
+      <section class="card">
+        <h2>Bidding</h2>
+        <div class="row">
+          <input id="entryId" placeholder="entryId (optional)" />
+          <input id="bidCents" placeholder="bid cents" />
+          <button id="placeBid">Place / increase bid</button>
+        </div>
+        <div class="row">
+          <button id="toggleAuto">Auto-refresh</button>
+          <span id="tick" class="muted"></span>
+        </div>
+        <h3>Leaderboard</h3>
+        <pre id="leaderboard" class="box"></pre>
+      </section>
+
+      <section class="card">
+        <h2>Demo bots</h2>
+        <div class="row">
+          <input id="botCount" type="number" value="50" />
+          <label>count</label>
+          <input id="botMaxBid" type="number" value="5000" />
+          <label>max bid cents</label>
+        </div>
+        <div class="row">
+          <input id="botInterval" type="number" value="150" />
+          <label>interval ms</label>
+          <input id="botPrefix" value="bot" />
+          <label>prefix</label>
+        </div>
+        <div class="row">
+          <button id="botsStart">Start bots</button>
+          <button id="botsStop">Stop bots</button>
+        </div>
+        <pre id="botsBox" class="box"></pre>
+      </section>
+
+      <section class="card full">
+        <h2>Winners (first 200)</h2>
+        <pre id="winners" class="box"></pre>
+      </section>
+    </main>
+
+    <footer class="muted">
+      <p>For load testing see <code>scripts/load-test.ts</code>.</p>
+    </footer>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
