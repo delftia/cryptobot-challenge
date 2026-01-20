@@ -113,7 +113,12 @@ UI сделан максимально простым - только для де
 docker compose up -d --build
 ```
 
-MongoDB запускается в режиме replica set (нужно для транзакций).
+После запуска сервисы будут доступны по адресам:
+
+* **Web UI:** [http://localhost:3000](http://localhost:3000)
+* **API health-check:** [http://localhost:3000/api/health](http://localhost:3000/api/health)
+
+MongoDB запускается в режиме **replica set** (необходимо для транзакций).
 
 ---
 
