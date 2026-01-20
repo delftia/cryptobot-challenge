@@ -1,4 +1,4 @@
-import http from 'http';
+import * as http from 'http';
 import { env } from './config/env.js';
 import { logger } from './config/logger.js';
 import { connectMongo, disconnectMongo } from './db/mongoose.js';

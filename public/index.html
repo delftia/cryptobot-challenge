@@ -1,115 +1,145 @@
 <!doctype html>
-<html lang="en">
+<html lang="ru">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Telegram Gift Auction - Demo</title>
+    <title>Аукцион подарков Telegram — демо</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
+
   <body>
     <header>
-      <h1>Multi-round Auction Demo (Telegram Gift Auctions-inspired)</h1>
-      <p class="muted">Minimal UI to demonstrate rounds, bidding, ranking, anti-sniping and balance correctness.</p>
+      <h1>Демо аукциона подарков Telegram</h1>
+      <p class="muted">
+        Упрощённый интерфейс для демонстрации: раунды, ставки, рейтинг,
+        anti-sniping и корректная работа с балансами.
+      </p>
     </header>
 
     <main class="grid">
       <section class="card">
-        <h2>User</h2>
+        <h2>Пользователь</h2>
         <div class="row">
-          <input id="username" placeholder="username" />
-          <button id="createUser">Create</button>
+          <input id="username" placeholder="Имя пользователя" />
+          <button id="createUser">Создать</button>
         </div>
         <div class="row">
-          <input id="userId" placeholder="userId" />
-          <button id="loadUser">Load</button>
+          <input id="userId" placeholder="ID пользователя" />
+          <button id="loadUser">Загрузить</button>
         </div>
         <div class="row">
-          <input id="topup" placeholder="topup cents (e.g. 100000 = 1000.00)" />
-          <button id="doTopup">Top up</button>
+          <input id="topup" placeholder="Пополнение (в центах, например 10000 = 100.00)" />
+          <button id="doTopup">Пополнить</button>
         </div>
         <pre id="userBox" class="box"></pre>
       </section>
 
       <section class="card">
-        <h2>Auction</h2>
+        <h2>Аукцион</h2>
+      
         <div class="row">
-          <input id="auctionId" placeholder="auctionId" />
-          <button id="loadAuction">Load</button>
+          <input id="auctionId" placeholder="ID аукциона" />
+          <button id="loadAuction">Загрузить</button>
         </div>
+      
         <div class="row">
-          <input id="title" placeholder="title" value="Demo Gift" />
+          <input id="title" placeholder="Название подарка" value="High-load demo gift" />
         </div>
+      
         <div class="row">
-          <input id="totalItems" type="number" value="500" />
-          <label>Total</label>
-          <input id="itemsPerRound" type="number" value="50" />
-          <label>Per round</label>
+          <input id="totalItems" type="number" value="40" />
+          <label>Всего подарков</label>
+      
+          <input id="itemsPerRound" type="number" value="20" />
+          <label>За раунд</label>
         </div>
+      
         <div class="row">
-          <input id="roundDurationSec" type="number" value="60" />
-          <label>Round sec</label>
-          <input id="minBidCents" type="number" value="1" />
-          <label>Min bid cents</label>
+          <input id="roundDurationSec" type="number" value="25" />
+          <label>Длительность раунда (сек)</label>
+      
+          <input id="minBidCents" type="number" value="20" />
+          <label>Минимальная ставка (центов)</label>
         </div>
+      
         <div class="row">
-          <input id="antiWindow" type="number" value="10" />
-          <label>Anti-snipe window</label>
-          <input id="antiExt" type="number" value="10" />
-          <label>+sec</label>
-          <input id="antiMax" type="number" value="60" />
-          <label>max +sec</label>
+          <input id="antiWindow" type="number" value="4" />
+          <label>Окно anti-sniping (сек)</label>
+      
+          <input id="antiExt" type="number" value="4" />
+          <label>Продление (сек)</label>
+      
+          <input id="antiMax" type="number" value="4" />
+          <label>Макс. продление (сек)</label>
         </div>
+      
         <div class="row">
-          <button id="createAuction">Create auction</button>
-          <button id="startAuction">Start</button>
+          <button id="createAuction">Создать аукцион</button>
+          <button id="startAuction">Запустить</button>
         </div>
+      
         <pre id="auctionBox" class="box"></pre>
       </section>
+      
 
       <section class="card">
-        <h2>Bidding</h2>
+        <h2>Ставки</h2>
         <div class="row">
-          <input id="entryId" placeholder="entryId (optional)" />
-          <input id="bidCents" placeholder="bid cents" />
-          <button id="placeBid">Place / increase bid</button>
+          <input id="entryId" placeholder="ID участия (необязательно)" />
+          <input id="bidCents" placeholder="Ставка (центов)" />
+          <button id="placeBid">Сделать / повысить ставку</button>
         </div>
+
         <div class="row">
-          <button id="toggleAuto">Auto-refresh</button>
+          <button id="toggleAuto">Автообновление</button>
           <span id="tick" class="muted"></span>
         </div>
-        <h3>Leaderboard</h3>
+
+        <h3>Текущий рейтинг</h3>
         <pre id="leaderboard" class="box"></pre>
       </section>
 
       <section class="card">
-        <h2>Demo bots</h2>
+        <h2>Боты (нагрузка)</h2>
+
         <div class="row">
           <input id="botCount" type="number" value="50" />
-          <label>count</label>
+          <label>Количество</label>
+
           <input id="botMaxBid" type="number" value="5000" />
-          <label>max bid cents</label>
+          <label>Макс. ставка (центов)</label>
         </div>
+
         <div class="row">
           <input id="botInterval" type="number" value="150" />
-          <label>interval ms</label>
+          <label>Интервал (мс)</label>
+
           <input id="botPrefix" value="bot" />
-          <label>prefix</label>
+          <label>Префикс</label>
         </div>
+
         <div class="row">
-          <button id="botsStart">Start bots</button>
-          <button id="botsStop">Stop bots</button>
+          <button id="botsStart">Запустить ботов</button>
+          <button id="botsStop">Остановить</button>
         </div>
+
         <pre id="botsBox" class="box"></pre>
       </section>
 
       <section class="card full">
-        <h2>Winners (first 200)</h2>
+        <h2>Победители (первые 200)</h2>
         <pre id="winners" class="box"></pre>
+      </section>
+
+      <!-- NEW: client logs -->
+      <section class="card full">
+        <h2>Логи (клиент)</h2>
+        <pre id="logs" class="box"></pre>
       </section>
     </main>
 
     <footer class="muted">
-      <p>For load testing see <code>scripts/load-test.ts</code>.</p>
+      <p>Нагрузочное тестирование: <code>scripts/load-test.ts</code></p>
     </footer>
 
     <script type="module" src="/app.js"></script>

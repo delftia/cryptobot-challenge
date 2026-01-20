@@ -1,186 +1,132 @@
-# Telegram Gift Auctions-inspired backend (Contest Project)
+# Backend Auction Challenge
 
-This repository implements a **multi-round auction for digital goods**, inspired by **Telegram Gift Auctions**.
+### Реализация механики Telegram Gift Auctions
 
-- **Stack (core):** Node.js, TypeScript, MongoDB
-- **Focus:** financial correctness, concurrent requests safety, edge-cases, anti-sniping, and clear reasoning
-- **Deliverables:** backend API, minimal UI, demo bots, load test scripts, Docker compose
+Этот проект - моя попытка **воссоздать механику Telegram Gift Auctions**, опираясь не на готовое ТЗ, а на анализ реального поведения продукта и публичных примеров.
 
-> ⚠️ This project is designed for a contest environment: rules are reconstructed from public behavior and official announcements. Where Telegram does not specify exact behavior (notably anti-sniping), the behavior is **explicitly parameterized** and documented.
+В Telegram аукцион - это не один дедлайн. Это **цепочка раундов**, где в каждом раунде часть участников получает предметы, а остальные продолжают участие. Именно эту модель я и реализовал.
 
 ---
 
-## Sources / What Telegram Gift Auctions are
+## 🎥 Демо-видео
 
-Telegram officially describes Gift Auctions as:
-- auctions for limited digital gifts
-- **multi-round** (not a single deadline)
-- in each round, a subset of top bidders receive the items; the rest continue
-
-**Official sources:**
-- Telegram Blog post (Nov 19, 2025): https://telegram.org/blog/live-stories-gift-auctions
-- Example auction reference (Khabib’s Papakha): Pavel Durov post: https://t.me/s/Durov/4450 and the auction itself: https://t.me/auction/KhabibsPapakha
-
-**Observed example facts (Khabib’s Papakha):** 29,000 items, 290 rounds, 5 minutes each, 100 items per round.
+▶️ https://youtu.be/Zsw2K0qng1M
 
 ---
 
-## Our auction spec (reconstructed)
 
-### Core mechanics
-- An auction has `totalItems` to distribute.
-- Auction runs in **rounds** of `roundDurationSec` seconds.
-- Each round awards up to `itemsPerRound` items to the **top bidders**.
-- Ranking uses:
-  1) `bid amount desc` (highest bid wins)
-  2) `lastBidAt asc` (earlier bid wins in a tie)
-- Winners of the round **exit** the auction for that entry.
-- Losers continue with their bids to the next round.
-- When all items are distributed, all remaining active bids are **refunded**.
+## Как я понял механику аукционов
 
-### Gift numbering
-Telegram’s UI shows gift numbers (e.g., №1..№N). Telegram assigns numbers according to place.
+Аукцион состоит из нескольких раундов фиксированной длительности.
+В каждом раунде:
 
-In this implementation:
-- Gift numbers are assigned **sequentially** for the auction: 1..`totalItems`.
-- In each round, the highest bidder gets the next gift number, etc.
+* участники делают или повышают ставки,
+* формируется рейтинг,
+* первые N участников получают предметы и выбывают,
+* остальные переходят в следующий раунд с теми же ставками.
 
-### Money semantics
-We model money in **integer cents** (no floats).
+Победители определяются по:
 
-- User wallet:
-  - `availableCents`
-  - `reservedCents`
-- When a user increases bid from `prev` to `new`:
-  - reserve **delta** (`new - prev`)
-- If user wins:
-  - `reservedCents -= bid` (charged)
-- If auction ends and user did not win:
-  - `reservedCents -= bid`, `availableCents += bid` (refunded)
+1. размеру ставки (больше - выше),
+2. времени последнего повышения (кто раньше - тот выше при равенстве).
 
-All operations are recorded in a **ledger** for auditing.
-
-### Anti-sniping (parameterized)
-Telegram mentions anti-sniping but does not publish exact numbers.
-
-This project implements configurable anti-sniping:
-- If a bid comes within the last `antiSnipeWindowSec` seconds of a round,
-  extend the round by `antiSnipeExtensionSec` seconds,
-  up to `antiSnipeMaxTotalExtensionSec` seconds total extension in that round.
-- `antiSnipeMaxTotalExtensionSec = 0` means **unlimited** extension.
+Когда все предметы распределены - аукцион заканчивается, все оставшиеся ставки возвращаются.
 
 ---
 
-## Architecture
+## Деньги и корректность
 
-### Collections (MongoDB)
-- `users`: wallet balances
-- `ledger`: immutable money operations log
-- `auctions`: auction state + round timer + settlement lock
-- `bids`: active bids per (auctionId, userId, entryId)
-- `winners`: round winners with gift numbers
+Я сразу сделал ставку на **строгую финансовую модель**:
 
-### Concurrency & correctness
-- All money and bidding operations use **MongoDB transactions**.
-- Round settlement uses a **distributed lock** stored in the auction document (`settling`, `settlingLockId`, `settlingAt`).
-- Stale locks are auto-cleared after 2 minutes.
+* все суммы - **только целые центы**,
+* у пользователя есть:
 
-Key invariants:
-- No negative balances.
-- Sum of all active bids equals sum of reserved balances for those users.
+  * доступный баланс,
+  * зарезервированный баланс под ставки,
+* при повышении ставки резервируется **только разница**,
+* деньги списываются **только при победе**,
+* при проигрыше или завершении аукциона всё возвращается.
 
-An endpoint `/api/auctions/:id/invariants` is provided for quick verification.
+Каждое движение денег пишется в отдельный **ledger**, чтобы всегда можно было проверить, что ничего не потерялось и не задублировалось.
 
 ---
 
-## Run locally (Docker)
+## Конкурентность и race conditions
+
+Аукцион - это конкурентная система: много ставок, много одновременных запросов, конец раунда под нагрузкой.
+
+Поэтому:
+
+* все критичные операции выполняются в **MongoDB-транзакциях**,
+* завершение раунда защищено **распределённым lock’ом**,
+* если процесс падает - lock автоматически очищается,
+* один и тот же раунд физически не может завершиться дважды.
+
+---
+
+## Anti-sniping
+
+Telegram упоминает защиту от ставок «в последнюю секунду», но не раскрывает детали.
+Я реализовал **настраиваемую модель**:
+
+* если ставка сделана близко к концу раунда - он продлевается,
+* продление ограничено по времени,
+* все параметры задаются при создании аукциона.
+
+Это позволяет честно проверить механику и избежать бесконечных раундов.
+
+---
+
+## Проверка под нагрузкой
+
+В проекте есть:
+
+* демо-боты, которые создают конкурентную нагрузку,
+* автоматические ставки с интервалами,
+* сценарии со ставками в последние секунды.
+
+Также есть endpoint проверки инвариантов, который подтверждает:
+
+* что балансы не уходят в минус,
+* что сумма ставок равна сумме резервов,
+* что деньги не теряются.
+
+---
+
+## Минимальный UI
+
+UI сделан максимально простым - только для демонстрации:
+
+* создание аукциона,
+* ставки,
+* рейтинг,
+* победители,
+* боты.
+
+Дизайн не самоцель - важно, чтобы было **видно, как работает логика**.
+
+---
+
+## Запуск
 
 ```bash
-docker compose up --build
+docker compose up -d --build
 ```
 
-Then open:
-- UI: http://localhost:3000
-- Health: http://localhost:3000/api/health
-
-> MongoDB is started as a **replica set** (required for transactions).
+MongoDB запускается в режиме replica set (нужно для транзакций).
 
 ---
 
-## Run locally (without Docker)
+## Итог
 
-Requirements:
-- Node.js 20+ (recommended 22)
-- MongoDB replica set enabled
+В этом проекте я сознательно сосредоточился не на количестве кода, а на:
 
-```bash
-cp .env.example .env
-npm install
-npm run dev
-```
+* понимании продукта без ТЗ,
+* явных допущениях,
+* корректной работе с деньгами,
+* устойчивости к конкурентным запросам,
+* проверяемости результата под нагрузкой.
 
----
-
-## Minimal UI
-
-The UI is intentionally simple:
-- create/load user, topup
-- create/load/start auction
-- place bids
-- see leaderboard and winners
-- start/stop demo bots
+Это именно тот тип задач, с которыми приходится работать в реальных продуктовых командах.
 
 ---
-
-## Load testing
-
-A script is provided:
-
-```bash
-npm run load
-```
-
-It will:
-- create an auction
-- create N users, topup
-- send many concurrent bids (including last-second bids)
-- print invariants at the end
-
-You can adjust variables inside `scripts/load-test.ts`.
-
----
-
-## API summary
-
-### Users
-- `POST /api/users` `{ username }`
-- `GET /api/users/:id`
-- `POST /api/users/:id/topup` `{ amountCents }`
-- `GET /api/users/:id/ledger?limit=100`
-
-### Auctions
-- `POST /api/auctions` (see UI fields)
-- `POST /api/auctions/:id/start`
-- `GET /api/auctions/:id`
-- `GET /api/auctions/:id/leaderboard?limit=100`
-- `GET /api/auctions/:id/winners?limit=200`
-- `GET /api/auctions/:id/invariants`
-
-### Bids
-- `POST /api/auctions/:id/bids` `{ userId, amountCents, entryId? }`
-
-### Demo bots
-- `POST /api/auctions/:id/bots/start` `{ count, maxBidCents, intervalMs, usernamePrefix }`
-- `POST /api/auctions/:id/bots/stop`
-
----
-
-## Notes for contest submission
-- Put this repo on GitHub.
-- Record a short demo video:
-  - create auction
-  - start bots
-  - show anti-sniping extension (bid near end)
-  - show winners distribution by rounds
-  - show invariants endpoint
-

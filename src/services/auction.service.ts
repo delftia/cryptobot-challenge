@@ -7,6 +7,7 @@ import { WinnerModel } from '../models/winner.model.js';
 import { UserModel } from '../models/user.model.js';
 import { LedgerModel } from '../models/ledger.model.js';
 import { assertIntCents } from './money.js';
+import { logger } from '../config/logger.js';
 
 export type CreateAuctionInput = {
   title: string;
@@ -21,6 +22,10 @@ export type CreateAuctionInput = {
 
 function nowDate() {
   return new Date();
+}
+
+function msSince(t0: number) {
+  return Date.now() - t0;
 }
 
 export class AuctionService {
@@ -71,6 +76,11 @@ export class AuctionService {
         auction.settlingAt = undefined;
         await auction.save({ session });
         updated = auction.toObject();
+
+        logger.info(
+          { auctionId: auction._id.toString(), round: auction.currentRound, endsAt: auction.currentRoundEndsAt },
+          'auction started'
+        );
       });
       return updated;
     } finally {
@@ -94,14 +104,13 @@ export class AuctionService {
   }
 
   static async getWinners(auctionId: string, limit = 200) {
-    return WinnerModel.find({ auctionId }).sort({ giftNumber: 1 }).limit(limit).populate('userId', { username: 1 }).lean();
+    return WinnerModel.find({ auctionId })
+      .sort({ giftNumber: 1 })
+      .limit(limit)
+      .populate('userId', { username: 1 })
+      .lean();
   }
 
-  /**
-   * Debug/contest helper: verifies key money + concurrency invariants.
-   * - Sum of all active bids equals sum of all users' reservedCents for those users.
-   * - No wallet goes negative.
-   */
   static async checkInvariants(auctionId: string) {
     const auction = await AuctionModel.findById(auctionId).lean();
     if (!auction) throw new Error('AUCTION_NOT_FOUND');
@@ -109,6 +118,7 @@ export class AuctionService {
     const activeBids = await BidModel.find({ auctionId, active: true }).lean();
     const reservedByUser = new Map<string, number>();
     let sumActiveBids = 0;
+
     for (const b of activeBids) {
       sumActiveBids += b.amountCents;
       const k = b.userId.toString();
@@ -118,11 +128,18 @@ export class AuctionService {
     const users = await UserModel.find({ _id: { $in: Array.from(reservedByUser.keys()) } }).lean();
     const perUser: any[] = [];
     let sumUserReserved = 0;
-    let negatives: any[] = [];
+    const negatives: any[] = [];
+
     for (const u of users) {
       sumUserReserved += u.wallet.reservedCents;
       const expected = reservedByUser.get(u._id.toString()) ?? 0;
-      perUser.push({ userId: u._id.toString(), username: u.username, reservedCents: u.wallet.reservedCents, expectedFromBidsCents: expected, ok: u.wallet.reservedCents === expected });
+      perUser.push({
+        userId: u._id.toString(),
+        username: u.username,
+        reservedCents: u.wallet.reservedCents,
+        expectedFromBidsCents: expected,
+        ok: u.wallet.reservedCents === expected,
+      });
       if (u.wallet.availableCents < 0 || u.wallet.reservedCents < 0) {
         negatives.push({ userId: u._id.toString(), username: u.username, wallet: u.wallet });
       }
@@ -147,17 +164,22 @@ export class AuctionService {
     if (args.amountCents <= 0) throw new Error('AMOUNT_MUST_BE_POSITIVE');
 
     const session = await mongoose.startSession();
+    const t0 = Date.now();
+
     try {
       let result: any;
+
       await session.withTransaction(async () => {
         const [auction, user] = await Promise.all([
           AuctionModel.findById(args.auctionId).session(session),
           UserModel.findById(args.userId).session(session),
         ]);
+
         if (!auction) throw new Error('AUCTION_NOT_FOUND');
         if (!user) throw new Error('USER_NOT_FOUND');
         if (auction.status !== 'running') throw new Error('AUCTION_NOT_RUNNING');
         if (!auction.currentRoundEndsAt) throw new Error('AUCTION_ROUND_NOT_SET');
+
         const now = nowDate();
         if (auction.currentRoundEndsAt <= now) throw new Error('AUCTION_ROUND_ENDED');
         if (auction.settling) throw new Error('AUCTION_IS_SETTLING');
@@ -193,18 +215,21 @@ export class AuctionService {
           { upsert: true, session }
         );
 
-        await LedgerModel.create([
-          {
-            userId: user._id,
-            type: 'RESERVE',
-            amountCents: delta,
-            refType: 'BID',
-            refId: `${auction._id.toString()}:${user._id.toString()}:${entryId}:${ulid()}`,
-            meta: { auctionId: auction._id.toString(), entryId, newBidCents: args.amountCents, prevBidCents: prev },
-          },
-        ], { session });
+        await LedgerModel.create(
+          [
+            {
+              userId: user._id,
+              type: 'RESERVE',
+              amountCents: delta,
+              refType: 'BID',
+              refId: `${auction._id.toString()}:${user._id.toString()}:${entryId}:${ulid()}`,
+              meta: { auctionId: auction._id.toString(), entryId, newBidCents: args.amountCents, prevBidCents: prev },
+            },
+          ],
+          { session }
+        );
 
-        // Anti-sniping: extend round if bid arrives near end.
+        // Anti-sniping
         const endsAt = DateTime.fromJSDate(auction.currentRoundEndsAt);
         const nowDt = DateTime.fromJSDate(now);
         const windowSec = auction.antiSnipeWindowSec;
@@ -220,6 +245,16 @@ export class AuctionService {
               auction.currentRoundEndsAt = endsAt.plus({ seconds: add }).toJSDate();
               auction.currentRoundExtendedBySec += add;
               await auction.save({ session });
+
+              logger.debug(
+                {
+                  auctionId: auction._id.toString(),
+                  round: auction.currentRound,
+                  addSec: add,
+                  totalExt: auction.currentRoundExtendedBySec,
+                },
+                'anti-snipe extended round'
+              );
             }
           }
         }
@@ -232,6 +267,12 @@ export class AuctionService {
           bidCents: args.amountCents,
         };
       });
+
+      logger.debug(
+        { auctionId: args.auctionId, userId: args.userId, entryId, bid: args.amountCents, ms: msSince(t0) },
+        'bid placed'
+      );
+
       return result;
     } finally {
       session.endSession();
@@ -239,31 +280,55 @@ export class AuctionService {
   }
 
   /**
-   * Called by the scheduler.
-   * Finds due auctions and settles them one-by-one (transactions per auction).
+   * Scheduler entrypoint.
+   * 1) clears stale locks
+   * 2) finds due auctions
+   * 3) settles each (best-effort, isolated)
    */
   static async settleDueAuctions() {
+    const t0 = Date.now();
     const now = nowDate();
-    // Clear stale locks (e.g. if a process died mid-transaction) older than 2 minutes.
-    await AuctionModel.updateMany(
-      { status: 'running', settling: true, settlingAt: { $lte: DateTime.fromJSDate(now).minus({ minutes: 2 }).toJSDate() } },
+
+    const staleCutoff = DateTime.fromJSDate(now).minus({ minutes: 2 }).toJSDate();
+    const staleRes = await AuctionModel.updateMany(
+      { status: 'running', settling: true, settlingAt: { $lte: staleCutoff } },
       { $set: { settling: false }, $unset: { settlingLockId: '', settlingAt: '' } }
     );
+
     const due = await AuctionModel.find({ status: 'running', currentRoundEndsAt: { $lte: now } })
-      .select({ _id: 1 })
+      .select({ _id: 1, currentRound: 1 })
       .lean();
 
+    if (staleRes.modifiedCount || due.length) {
+      logger.info(
+        { staleLocksCleared: staleRes.modifiedCount, dueCount: due.length, ms: msSince(t0) },
+        'settleDueAuctions summary'
+      );
+    } else {
+      logger.debug({ ms: msSince(t0) }, 'settleDueAuctions: nothing due');
+    }
+
     for (const a of due) {
-      await this.settleRound(a._id.toString(), now);
+      try {
+        await this.settleRound(a._id.toString(), now);
+      } catch (err) {
+        // IMPORTANT: never let one auction break the whole scheduler tick
+        logger.error({ err, auctionId: a._id.toString() }, 'settleRound failed (outer)');
+      }
     }
   }
 
   static async settleRound(auctionId: string, now = nowDate()) {
+    const t0 = Date.now();
+    const lockId = ulid();
+
     const session = await mongoose.startSession();
+
+    logger.info({ auctionId, lockId }, 'SETTLE start');
+
     try {
       await session.withTransaction(async () => {
-        const lockId = ulid();
-        // Acquire a settlement lock so multiple instances can't settle the same round concurrently.
+        // 1) Acquire settlement lock (atomic)
         const auction = await AuctionModel.findOneAndUpdate(
           {
             _id: auctionId,
@@ -275,8 +340,13 @@ export class AuctionService {
           { new: true, session }
         );
 
-        if (!auction) return; // nothing to do or another worker is settling
+        if (!auction) {
+          logger.debug({ auctionId, ms: msSince(t0) }, 'SETTLE skip (no lock / not due / already settling)');
+          return;
+        }
+
         if (!auction.currentRoundEndsAt) {
+          logger.warn({ auctionId }, 'SETTLE: currentRoundEndsAt is null, unlocking');
           auction.settling = false;
           auction.settlingLockId = undefined;
           auction.settlingAt = undefined;
@@ -284,107 +354,176 @@ export class AuctionService {
           return;
         }
 
+        const round = auction.currentRound;
         const winnersCount = Math.min(auction.itemsPerRound, auction.remainingItems);
 
-        // Get top bids (active only). Tie-breaker: earlier lastBidAt wins.
+        logger.info(
+          {
+            auctionId,
+            round,
+            winnersCount,
+            remainingItems: auction.remainingItems,
+            endsAt: auction.currentRoundEndsAt,
+          },
+          'SETTLE locked'
+        );
+
+        // 2) Select winners (top active bids)
+        const tWinners = Date.now();
         const topBids = await BidModel.find({ auctionId: auction._id, active: true })
           .sort({ amountCents: -1, lastBidAt: 1 })
           .limit(winnersCount)
+          .maxTimeMS(8000)
           .session(session);
 
-        // If there are not enough bidders, we still proceed: only existing bids can win.
         const actualWinners = topBids;
 
-        // Charge winners and mark their entries as won.
-        for (let i = 0; i < actualWinners.length; i++) {
-          const b = actualWinners[i]!;
-          const giftNumber = auction.nextGiftNumber + i;
+        logger.info(
+          { auctionId, round, winners: actualWinners.length, ms: msSince(tWinners) },
+          'SETTLE winners selected'
+        );
 
-          await WinnerModel.create([
-            {
-              auctionId: auction._id,
-              round: auction.currentRound,
-              userId: b.userId,
-              entryId: b.entryId,
-              amountCents: b.amountCents,
-              giftNumber,
+        // 3) Charge winners (bulk)
+        const tCharge = Date.now();
+
+        const winnersDocs = actualWinners.map((b, i) => ({
+          auctionId: auction._id,
+          round,
+          userId: b.userId,
+          entryId: b.entryId,
+          amountCents: b.amountCents,
+          giftNumber: auction.nextGiftNumber + i,
+        }));
+
+        if (winnersDocs.length > 0) {
+          await WinnerModel.insertMany(winnersDocs, { session });
+
+          // Update users reservedCents -= bid (guard invariant)
+          for (const w of winnersDocs) {
+            const r = await UserModel.updateOne(
+              { _id: w.userId, 'wallet.reservedCents': { $gte: w.amountCents } },
+              { $inc: { 'wallet.reservedCents': -w.amountCents } },
+              { session }
+            );
+            if (r.matchedCount !== 1) throw new Error('INVARIANT_RESERVED_LT_BID');
+          }
+
+          // Ledger for charges
+          const chargeLedgers = winnersDocs.map((w) => ({
+            userId: w.userId,
+            type: 'CHARGE' as const,
+            amountCents: w.amountCents,
+            refType: 'WIN' as const,
+            refId: `${auction._id.toString()}:${round}:${w.giftNumber}:${w.userId.toString()}:${w.entryId}`,
+            meta: { auctionId: auction._id.toString(), round, giftNumber: w.giftNumber, bidCents: w.amountCents },
+          }));
+          await LedgerModel.insertMany(chargeLedgers, { session });
+
+          // Mark winner bids inactive
+          const winnerBidOps = actualWinners.map((b) => ({
+            updateOne: {
+              filter: { _id: b._id },
+              update: { $set: { active: false } },
             },
-          ], { session });
-
-          const user = await UserModel.findById(b.userId).session(session);
-          if (!user) throw new Error('USER_NOT_FOUND');
-          if (user.wallet.reservedCents < b.amountCents) throw new Error('INVARIANT_RESERVED_LT_BID');
-
-          user.wallet.reservedCents -= b.amountCents;
-          await user.save({ session });
-
-          await LedgerModel.create([
-            {
-              userId: user._id,
-              type: 'CHARGE',
-              amountCents: b.amountCents,
-              refType: 'WIN',
-              refId: `${auction._id.toString()}:${auction.currentRound}:${giftNumber}:${b.userId.toString()}:${b.entryId}`,
-              meta: { auctionId: auction._id.toString(), round: auction.currentRound, giftNumber, bidCents: b.amountCents },
-            },
-          ], { session });
-
-          b.active = false;
-          await b.save({ session });
+          }));
+          await BidModel.bulkWrite(winnerBidOps, { session });
         }
 
-        // Reduce remaining items by actual awarded count.
-        auction.remainingItems -= actualWinners.length;
-        auction.nextGiftNumber += actualWinners.length;
+        logger.info({ auctionId, round, ms: msSince(tCharge) }, 'SETTLE winners charged');
 
+        // 4) Update auction counters
+        auction.remainingItems -= winnersDocs.length;
+        auction.nextGiftNumber += winnersDocs.length;
+
+        // 5) End auction if no items left: refund losers
         if (auction.remainingItems <= 0) {
-          // Refund everyone else and end auction.
+          const tRefund = Date.now();
+
           const losers = await BidModel.find({ auctionId: auction._id, active: true }).session(session);
-          for (const b of losers) {
-            const user = await UserModel.findById(b.userId).session(session);
-            if (!user) throw new Error('USER_NOT_FOUND');
-            if (user.wallet.reservedCents < b.amountCents) throw new Error('INVARIANT_RESERVED_LT_BID');
+          if (losers.length > 0) {
+            // Refund each active bid
+            for (const b of losers) {
+              const r = await UserModel.updateOne(
+                { _id: b.userId, 'wallet.reservedCents': { $gte: b.amountCents } },
+                { $inc: { 'wallet.reservedCents': -b.amountCents, 'wallet.availableCents': b.amountCents } },
+                { session }
+              );
+              if (r.matchedCount !== 1) throw new Error('INVARIANT_RESERVED_LT_BID');
+            }
 
-            user.wallet.reservedCents -= b.amountCents;
-            user.wallet.availableCents += b.amountCents;
-            await user.save({ session });
+            const refundLedgers = losers.map((b) => ({
+              userId: b.userId,
+              type: 'REFUND' as const,
+              amountCents: b.amountCents,
+              refType: 'AUCTION_END' as const,
+              refId: `${auction._id.toString()}:refund:${b.userId.toString()}:${b.entryId}:${ulid()}`,
+              meta: { auctionId: auction._id.toString(), entryId: b.entryId, bidCents: b.amountCents },
+            }));
+            await LedgerModel.insertMany(refundLedgers, { session });
 
-            await LedgerModel.create([
-              {
-                userId: user._id,
-                type: 'REFUND',
-                amountCents: b.amountCents,
-                refType: 'AUCTION_END',
-                refId: `${auction._id.toString()}:refund:${b.userId.toString()}:${b.entryId}:${ulid()}`,
-                meta: { auctionId: auction._id.toString(), entryId: b.entryId, bidCents: b.amountCents },
+            const loserOps = losers.map((b) => ({
+              updateOne: {
+                filter: { _id: b._id },
+                update: { $set: { active: false } },
               },
-            ], { session });
-
-            b.active = false;
-            await b.save({ session });
+            }));
+            await BidModel.bulkWrite(loserOps, { session });
           }
 
           auction.status = 'ended';
           auction.currentRoundEndsAt = null;
           auction.currentRoundStartedAt = null;
           auction.currentRoundExtendedBySec = 0;
+
           auction.settling = false;
           auction.settlingLockId = undefined;
           auction.settlingAt = undefined;
+
           await auction.save({ session });
+
+          logger.info(
+            { auctionId, round, refundedLosers: losers.length, ms: msSince(tRefund) },
+            'SETTLE auction ended + losers refunded'
+          );
+
           return;
         }
 
-        // Next round
-        auction.currentRound += 1;
+        const nextRound = auction.currentRound + 1;
+        auction.currentRound = nextRound;
         auction.currentRoundStartedAt = now;
         auction.currentRoundEndsAt = DateTime.fromJSDate(now).plus({ seconds: auction.roundDurationSec }).toJSDate();
         auction.currentRoundExtendedBySec = 0;
+
         auction.settling = false;
         auction.settlingLockId = undefined;
         auction.settlingAt = undefined;
+
         await auction.save({ session });
+
+        logger.info(
+          { auctionId, fromRound: round, toRound: nextRound, remainingItems: auction.remainingItems },
+          'SETTLE next round started'
+        );
       });
+
+      logger.info({ auctionId, lockId, ms: msSince(t0) }, 'SETTLE done');
+    } catch (err) {
+      logger.error({ err, auctionId, lockId, ms: msSince(t0) }, 'SETTLE failed');
+
+      try {
+        const r = await AuctionModel.updateOne(
+          { _id: auctionId, settling: true, settlingLockId: lockId },
+          { $set: { settling: false }, $unset: { settlingLockId: '', settlingAt: '' } }
+        );
+        if (r.modifiedCount) {
+          logger.warn({ auctionId, lockId }, 'SETTLE recovered by best-effort unlock');
+        }
+      } catch (unlockErr) {
+        logger.error({ err: unlockErr, auctionId, lockId }, 'SETTLE unlock failed');
+      }
+
+      throw err;
     } finally {
       session.endSession();
     }
